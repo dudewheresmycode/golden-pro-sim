@@ -1,0 +1,10 @@
+{
+  "plugin": {
+    "name": "goldenpro",
+    "description": "Golden Tee control plugin",
+    "version": "0.0.1",
+    "author": "dudewheresmycode",
+    "type": "plugin",
+    "start": "true"
+  }
+}
