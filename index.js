@@ -3,6 +3,11 @@ const path = require('path');
 const express = require('express');
 const { spawn } = require('child_process');
 
+const OpenConnectServer = require('./openconnect.js');
+
+const OPENCONNECT_PORT = 1921;
+const HTTP_PORT = 4443;
+
 const BASE_PATH = __dirname;
 const MAME_PATH = path.join(BASE_PATH, 'mame');
 const PLUGINS_PATH = path.join(BASE_PATH, 'mame/plugins');
@@ -25,6 +30,9 @@ function initMame() {
   return new Promise((resolve, reject) => {
     const opts = [
       '-window',
+//      '-numscreens', '1',
+//      '-screen=.DISPLAY2',
+//      '-screen1', '.DISPLAY1',
       '-skip_gameinfo',
       '-rompath', ROM_PATH,
       '-homepath', DATA_PATH,
@@ -41,6 +49,8 @@ function initMame() {
     mame.stdout.on('data', data => {
       console.log(`MAME stdout: ${data}`);
       if (!inited && data.toString().includes('[MAME]')) {
+        // console.log('MAME is ready!');
+        // await sendToMame('initialize()');
         inited = true;
         resolve();
       }
@@ -76,6 +86,36 @@ function clampToRange(val, min, max) {
   return Math.min(Math.max(val, min), max);
 }
 
+/**
+ * This is where the magic happens. We take our raw shot data (ball speed, hla) and
+ * transform that into trackball input vectors
+ */
+async function launchMonitorShotToGoldenTeeInput(ballSpeed, hla) {
+  // we need to invert the HLA degree for golden tee
+  hla = hla * -1;
+  // convert our ball speed and horizontal angle to value between 0 - 1
+  // we use this to calculate the percent of trackball speed/spin to apply
+  const trackballX = Math.round(convertRange(clampToRange(hla, ...RANGE_HLA), RANGE_HLA, [0, 256]));
+  // const trackballY = convertRange(clampToRange(ballSpeed, ...RANGE_BALL_SPEED), RANGE_BALL_SPEED, [0, 1]);
+  // console.log(`trackballX: ${trackballX}, trackballY, ${trackballY}`);
+  // send the shot data to MAME
+  // we replace some string values in our loader script
+  // const gen = ScriptTemplate.toString().replace('_SHOT_COMMAND_', `"shot", ${trackballY}, ${trackballX}`);
+  console.log(`Sending shot to MAME (${ballSpeed}, ${trackballX})`)
+  await sendToMame(`sendShot(${ballSpeed}, ${trackballX})`);
+}
+
+// Setup GSPro OpenConnect server
+const connectServer = new OpenConnectServer();
+
+connectServer.on('shot', shotData => {
+  console.log('received shot', shotData);
+  const ballSpeed = shotData?.BallData?.Speed;
+  const hla = shotData?.BallData?.HLA || 0;
+  launchMonitorShotToGoldenTeeInput(ballSpeed, hla);
+});
+
+// Setup HTTP server
 const app = express();
 app.get('/club', async (req, res) => {
   const { direction } = req.query;
@@ -116,24 +156,13 @@ app.get('/shot', async (req, res) => {
 
   // return res.sendStatus(200);
   console.log(`ballSpeed: ${ballSpeedNumber}, hlaNumber, ${hlaNumber}`);
-
-  // we need to invert the HLA degree for golen tee
-  hlaNumber = hlaNumber * -1;
-  // convert our ball speed and horizontal angle to value between 0 - 1
-  // we use this to calculate the percent of trackball speed/spin to apply
-  const trackballX = Math.round(convertRange(clampToRange(hlaNumber, ...RANGE_HLA), RANGE_HLA, [0, 256]));
-  const trackballY = convertRange(clampToRange(ballSpeedNumber, ...RANGE_BALL_SPEED), RANGE_BALL_SPEED, [0, 1]);
-  console.log(`trackballX: ${trackballX}, trackballY, ${trackballY}`);
-  // send the shot data to MAME
-  // we replace some string values in our loader script
-  // const gen = ScriptTemplate.toString().replace('_SHOT_COMMAND_', `"shot", ${trackballY}, ${trackballX}`);
-  await sendToMame(`sendShot(${ballSpeedNumber}, ${trackballX})`);
-
+  await launchMonitorShotToGoldenTeeInput(ballSpeedNumber, hlaNumber);
   res.sendStatus(202);
 });
+
+
 (async () => {
-  app.listen(4443);
+  await connectServer.listen(OPENCONNECT_PORT);
+  await app.listen(HTTP_PORT);
   await initMame();
-  console.log('MAME is ready!');
-  // await sendToMame('initialize()');
 })();

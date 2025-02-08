@@ -2,6 +2,17 @@ local M = {}
 local reset_subscription, stop_subscription
 
 M.nextFrame = 0
+M.gameState = 0
+M.activeState = false
+M.previousState = false
+M.debugState = false
+
+local MEMORY_ADDR = {}
+-- gets set to 0x0 during gameplay
+-- MEMORY_ADDR.GAME_ACTIVE = 0x25E0
+MEMORY_ADDR.GAME_ACTIVE = 0x25E0 + 4
+-- set to an integer representing club number 1-13
+MEMORY_ADDR.CLUB_SELECT = 0x2480
 
 -- Source: https://www.trackman.com/blog/golf/introducing-updated-tour-averages
 -- we plus or minus a few yards to the PGA averages for each club as the max you can acheive
@@ -75,12 +86,31 @@ function M.getYardage()
   return yards
 end
 
+function ternary(cond, T, F)
+  if cond then return T else return F end
+end
+
 function M.getGameState()
   -- local address = 0x1950
-  local address = 0x2480
   local mem = manager.machine.devices[":maincpu"].spaces["program"]
 
-  local stateBlock = mem:read_u8(address + 5)
+  local activeBlock = mem:read_u32(MEMORY_ADDR.GAME_ACTIVE)
+  if M.lastBlock ~= activeBlock then
+    print(string.format('activeBlock 0x%x ', activeBlock))
+    M.lastBlock = activeBlock
+  end
+
+  local isReady = mem:read_u8(MEMORY_ADDR.GAME_ACTIVE) == 0xff
+  local isActive = mem:read_u8(MEMORY_ADDR.GAME_ACTIVE) ~= 0xff
+
+  if M.gameState == 0 and isReady then
+    M.gameState = 1
+  end
+  if M.gameState == 1 and isActive then
+    M.gameState = 2
+  end
+
+  local stateBlock = mem:read_u8(MEMORY_ADDR.CLUB_SELECT + 5)
   -- -- print('stateBlock first: ' .. string.format("0x%x ", stateBlock))
 
   -- local bytes = {}
@@ -93,7 +123,7 @@ function M.getGameState()
   -- end
 
   local bytes = {}
-  for byte_address = address, address + 7 do
+  for byte_address = MEMORY_ADDR.CLUB_SELECT, MEMORY_ADDR.CLUB_SELECT + 7 do
     byte = mem:read_u8(byte_address)
     -- print(byte)
     -- local byte = (memoryBlock >> (i * 8)) & 0xFF
@@ -103,7 +133,7 @@ function M.getGameState()
       table.insert(bytes, string.format("%x", byte))
     end
   end
-  print(string.format("0x%s", table.concat(bytes)))
+  -- print(string.format("0x%s", table.concat(bytes)))
   total = 0
   -- for index, value in ipairs(bytes) do
   --   total = total + (value * math.floor(10 ^ (index - 1)))
@@ -121,13 +151,45 @@ function M.getGameState()
       selectedClub = club
     end
   end
+
+  local state = ternary(M.gameState > 1, 'active', 'inactive')
   return {
+    active = M.gameState > 1,
     club = selectedClub,
-    state = total,
+    state = state,
   }
 end
 
+function M.gameActivated()
+  M.activeState = true
+  print("Controls have been activated")
+  -- we only need control of the trackball (arrow keys) during actual gameplay
+  local ioport = manager.machine.ioport
+  local inx = ioport.ports[":TRACKX1"]
+  local iny = ioport.ports[":TRACKY1"]
+  -- we set to our initial center point of 128, half the value of the full 0-255 range of x axis
+  inx.fields["Trackball X"]:set_value(128)
+  iny.fields["Trackball Y"]:set_value(0)
+  emu.wait_next_frame()
+end
+
+function M.gameDeactivated()
+  M.activeState = false
+  -- allows trackball (arrow keys) to be used when not in gameplay
+  print("Controls have been deactivated")
+  local ioport = manager.machine.ioport
+  local inx = ioport.ports[":TRACKX1"]
+  local iny = ioport.ports[":TRACKY1"]
+  inx.fields["Trackball X"]:clear_value()
+  iny.fields["Trackball Y"]:clear_value()
+  emu.wait_next_frame()
+end
+
 function M.updateMem()
+  s = manager.machine.screens[':screen']
+  local state = M.getGameState()
+  -- k = manager.machine.uiinput
+
   -- local mem = manager.machine.devices[":maincpu"].spaces["program"]
   -- local byte = mem:read_i32(0x1950)
 
@@ -146,28 +208,50 @@ function M.updateMem()
 
   -- local yards = string.reverse(string.format("%s", table.concat(bytes)))
 
+  -- print('prv: ' .. ternary(M.previousState, 'y', 'n') .. ' active: ' .. ternary(state.active, 'y', 'n'))
+  if M.previousState == false and state.active == true then
+    print("Activate!!!")
+    M.gameActivated()
+  end
+  M.previousState = state.active
 
-  s = manager.machine.screens[':screen']
-  s:draw_text(5, 5, '1 = Start, 5 = Coin') -- (x0, y0, msg)
-
-  local state = M.getGameState()
-  -- print(state.club)
-  -- s:draw_text(5, 15, 'club: ' .. string.format('%d', state.club)) -- (x0, y0, msg)
-  s:draw_text(5, 15, 'club: ' .. state.club.name) -- (x0, y0, msg)
-  s:draw_text(5, 25, 'state: ' .. state.state)    -- (x0, y0, msg)
-  -- s:draw_text(5, 25, 'yds: ' .. string.format("0x%x ", t)) -- (x0, y0, msg)
-
-  local yards = M.getYardage()
-  -- print(yards)
-  s:draw_text(5, 35, 'yds: ' .. yards) -- (x0, y0, msg)
-  -- s:draw_text(5, 25, 'yds: ' .. string.format("0x%x ", yardarge)) -- (x0, y0, msg)
-  -- s:draw_text(5, 25, 'yds: ' .. utf8_from(t)) -- (x0, y0, msg)
-  s:draw_box(0, 0, 80, 80, 0xcc828f8f, 0) -- (x0, y0, x1, y1, line-color, fill-color)
-  -- s:draw_line(20, 20, 80, 80, 0xff00ffff) -- (x0, y0, x1, y1, line-color)
-  -- if M.nextFrame == 0 then
-  --   M.nextFrame = 1
-  --   return
+  -- if M.activeState == true and state.state.active == false then
+  --   print("Deactivate!!!")
+  --   M.gameDeactivated()
   -- end
+
+  if M.debugState then
+    -- s:draw_text(2, 2, '1 = START |') -- (x0, y0, msg)
+    -- print(state.club)
+    -- s:draw_text(5, 15, 'club: ' .. string.format('%d', state.club)) -- (x0, y0, msg)
+    s:draw_text(2, 2, 'CLUB: ' .. state.club.name)                                -- (x0, y0, msg)
+    s:draw_text(35, 2, 'STATE: ' .. ternary(M.activeState, 'active', 'inactive')) -- (x0, y0, msg)
+    -- s:draw_text(5, 33, 'state: ' .. state.state)                                  -- (x0, y0, msg)
+    -- local yards = M.getYardage()
+    -- print(yards)
+    -- s:draw_text(100, 2, 'key: ' .. ternary(keyPressed, 'YES', 'NO')) -- (x0, y0, msg)
+    s:draw_box(0, 0, 90, 12, 0xcc828f8f, 0) -- (x0, y0, x1, y1, line-color, fill-color)
+  end
+
+  local keyPressedX = manager.machine.input:code_pressed_once(manager.machine.input:code_from_token("KEYCODE_X"))
+  if keyPressedX then
+    print("Manually toggling trackball control...")
+    if M.activeState then
+      M.gameDeactivated()
+    else
+      M.gameActivated()
+    end
+  end
+
+  local keyPressedD = manager.machine.input:code_pressed_once(manager.machine.input:code_from_token("KEYCODE_D"))
+  if keyPressedD then
+    if M.debugState then
+      M.debugState = false
+    else
+      M.debugState = true
+    end
+  end
+
   M.nextFrame = M.nextFrame + 1
 end
 
@@ -199,10 +283,10 @@ function M.initialize()
   -- set initial x trackball to our center point
   -- we do this before the trackball is active for the shot
   -- disable for debugging
-  local ioport = manager.machine.ioport
-  local inx = ioport.ports[":TRACKX1"]
-  inx.fields["Trackball X"]:set_value(128)
-  emu.wait_next_frame()
+  -- local ioport = manager.machine.ioport
+  -- local inx = ioport.ports[":TRACKX1"]
+  -- inx.fields["Trackball X"]:set_value(128)
+  -- emu.wait_next_frame()
 end
 
 function M.pressLeftRight(direction)
@@ -416,7 +500,7 @@ function M.startplugin()
   reset_subscription = emu.add_machine_reset_notifier(
     function()
       emu.print_info("Starting " .. emu.gamename())
-      M.initialize()
+      -- M.initialize()
       emu.register_frame_done(M.updateMem, "frame")
     end)
 

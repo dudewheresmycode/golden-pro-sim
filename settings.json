@@ -1,4 +1,4 @@
 {
-  "mame": "C:\\Users\\nueca\\Documents\\scripting\\goldentee-sim\\mame\\mame.exe",
-  "roms": "C:\\Users\\nueca\\Documents\\scripting\\goldentee-sim\\mame\\roms"
+  "mame": "C:\\PATH\\TO\\mame",
+  "rom": "C:\\PATH\\TO\\rom"
 }
